@@ -1,4 +1,4 @@
-name: Tests
+name: build
 
 on: [push, pull_request]
 
@@ -10,52 +10,70 @@ jobs:
   phpunit:
     name: PHP ${{ matrix.php }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-#    services:
-#      mysql:
-#        image: mysql
-#        env:
-#          MYSQL_ALLOW_EMPTY_PASSWORD: false
-#          MYSQL_ROOT_PASSWORD: root
-#          MYSQL_DATABASE: yiitest
-#        ports:
-#          - 3306/tcp
-#        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-#      postgres:
-#        image: postgres:9.6
-#        env:
-#          POSTGRES_USER: postgres
-#          POSTGRES_PASSWORD:
-#          POSTGRES_DB: yiitest
-#        ports:
-#          - 5432/tcp
-#        options: --name=postgres --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: yiitest
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+      postgres:
+        image: postgres:9.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yiitest
+        ports:
+          - 5432:5432
+        options: --name=postgres --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
+      mssql:
+          image: mcr.microsoft.com/mssql/server:2017-latest
+          env:
+              SA_PASSWORD: YourStrong!Passw0rd
+              ACCEPT_EULA: Y
+              MSSQL_PID: Developer
+          ports:
+              - 1433:1433
+          options: --name=mssql --health-cmd="/opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P 'YourStrong!Passw0rd' -Q 'SELECT 1'" --health-interval=10s --health-timeout=5s --health-retries=3
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        php: ['5.6', '7.0', '7.1', '7.2', '7.3', '7.4']
+        php: ['5.4', '5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4']
 
     steps:
       - name: Generate french locale
         run: sudo locale-gen fr_FR.UTF-8
+      - name: Create MS SQL Database
+        run: docker exec -i mssql /opt/mssql-tools/bin/sqlcmd -S localhost -U SA -P 'YourStrong!Passw0rd' -Q 'CREATE DATABASE yiitest'
       - name: Checkout
         uses: actions/checkout@v2
       - name: Install PHP
-        uses: shivammathur/setup-php@v1
+        uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: apc, curl, mbstring, dom, intl, mysql, pgsql, memcached, pdo, pdo_sqlite, imagick
+          tools: pecl
+          extensions: apc, curl, dom, imagick, intl, mbstring, mcrypt, memcached, mysql, pdo, pdo_mysql, pdo_pgsql, pdo_sqlite, pgsql, sqlite
           ini-values: date.timezone='UTC'
+      - name: Install php-sqlsrv
+        run: |
+            curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add - >/dev/null 2>&1
+            curl -sSL https://packages.microsoft.com/config/ubuntu/16.04/mssql-server-2017.list | sudo tee /etc/apt/sources.list.d/mssql-server-2017.list >/dev/null 2>&1
+            printf "\033[32;1m✓ \033[0m\033[90;1madd microsoft keys & repository\n"
+            sudo apt-get -q update >/dev/null 2>&1
+            printf "\033[32;1m✓ \033[0m\033[90;1mapt-get update\n"
+            sudo pecl -q install pdo_sqlsrv > /dev/null 2>&1
+            printf "\033[32;1m✓ \033[0m\033[90;1mpecl install pdo_sqlsrv\n"
+            if (php -m | grep -i -q -w "pdo_sqlsrv"); then
+                printf "\033[32;1mpdo_sqlsrv installed correct\n"
+            else
+                printf "\033[31;1mpdo_sqlsrv not installed :-(\n"
+            fi
+        if: matrix.php == '7.4' || matrix.php == '7.3' || matrix.php == '7.2'
       - name: Install Memcached
         uses: niden/actions-memcached@v7
-      - name: Install Postgres
-        uses: harmon758/postgresql-action@v1
-        with:
-          postgresql version: 9.6
-          postgresql db: yiitest
-          postgresql user: postgres
-      - name: Create mysql db
-        run: mysql -uroot -proot -e 'CREATE DATABASE `yiitest`;'
       - name: Get composer cache directory
         id: composer-cache
         run: echo "::set-output name=dir::$(composer config cache-files-dir)"
@@ -67,17 +85,17 @@ jobs:
           restore-keys: ${{ runner.os }}-composer-
       - name: Install dependencies
         run: composer update $DEFAULT_COMPOSER_FLAGS
-      - name: PHP Unit tests
+      - name: PHP Unit tests for PHP 7.1
         run: vendor/bin/phpunit --verbose --coverage-clover=coverage.clover --exclude-group oci,wincache,xcache,zenddata,cubrid
         if: matrix.php == '7.1'
-      - name: PHP Unit tests
+      - name: PHP Unit tests for PHP 7.2 - 7.4
         run: vendor/bin/phpunit --verbose --exclude-group $PHPUNIT_EXCLUDE_GROUP
         env:
           PHPUNIT_EXCLUDE_GROUP: oci,wincache,xcache,zenddata,cubrid
         if: matrix.php == '7.4' || matrix.php == '7.3' || matrix.php == '7.2'
-      - name: PHP Unit tests
+      - name: PHP Unit tests for PHP 5.4 - 7.0
         run: vendor/bin/phpunit --verbose --exclude-group $PHPUNIT_EXCLUDE_GROUP
-        if: matrix.php == '7.0' || matrix.php == '5.6'
+        if: matrix.php == '7.0' || matrix.php == '5.6' || matrix.php == '5.5' || matrix.php == '5.4'
       - name: Code coverage
         run: |
           wget https://scrutinizer-ci.com/ocular.phar
@@ -93,7 +111,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
       - name: Install PHP
-        uses: shivammathur/setup-php@v1
+        uses: shivammathur/setup-php@v2
         with:
           php-version: 7.2
       - name: Get composer cache directory
